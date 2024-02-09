@@ -126,6 +126,8 @@ namespace StarterAssets
             }
         }
 
+        public bool canControl { get { return !NetworkManager.Singleton.IsClient || IsOwner;}}
+
         private void Awake()
         {
             // get a reference to our main camera
@@ -160,7 +162,7 @@ namespace StarterAssets
             _jumpTimeoutDelta = JumpTimeout;
             _fallTimeoutDelta = FallTimeout;
 
-            if (IsOwner) {
+            if (canControl) {
                 CameraManager.followCamera.m_Follow = CinemachineCameraTarget.transform;
                 CameraManager.aimingCamera.m_Follow = CinemachineCameraTarget.transform;
             } else {
@@ -170,7 +172,7 @@ namespace StarterAssets
 
         public override void OnNetworkSpawn()
         {
-            if (IsOwner) {
+            if (canControl) {
                 CameraManager.followCamera.m_Follow = CinemachineCameraTarget.transform;
                 CameraManager.aimingCamera.m_Follow = CinemachineCameraTarget.transform;
             }
@@ -183,18 +185,14 @@ namespace StarterAssets
             JumpAndGravity();
             GroundedCheck();
 
-            if (Input.GetKeyDown(KeyCode.C)) {
-                Debug.Log("IsOwner: "+IsOwner);
-            }
-
-            if (IsOwner) Move();
+            if (canControl) Move();
 
             MoveAnimation();
         }
 
         private void LateUpdate()
         {
-            if (IsOwner) CameraRotation();
+            if (canControl) CameraRotation();
         }
 
         private void AssignAnimationIDs()
@@ -242,33 +240,57 @@ namespace StarterAssets
                 _cinemachineTargetYaw, 0.0f);
         }
 
+        public float targetSpeed {
+            get { return NetworkManager.Singleton.IsClient ? _targetSpeed.Value : s_targetSpeed;}
+            set {
+                if (NetworkManager.Singleton.IsClient) {
+                    _targetSpeed.Value = value;
+                } else {
+                    s_targetSpeed = value;
+                }
+            }
+        }
+
+        public float inputMagnitude {
+            get { return NetworkManager.Singleton.IsClient ? _inputMagnitude.Value : s_inputMagnitude;}
+            set {
+                if (NetworkManager.Singleton.IsClient) {
+                    _inputMagnitude.Value = value;
+                } else {
+                    s_inputMagnitude = value;
+                }
+            }
+        }
+
         NetworkVariable<float> _targetSpeed = new NetworkVariable<float>(readPerm: NetworkVariableReadPermission.Everyone, writePerm: NetworkVariableWritePermission.Owner);
         NetworkVariable<float> _inputMagnitude = new NetworkVariable<float>(readPerm: NetworkVariableReadPermission.Everyone, writePerm: NetworkVariableWritePermission.Owner);
+
+        float s_targetSpeed, s_inputMagnitude;
 
         private void Move()
         {
             // set target speed based on move speed, sprint speed and if sprint is pressed
-            _targetSpeed.Value = _walking ? WalkSpeed : (_input.sprint ? SprintSpeed : RunSpeed);
+            targetSpeed = _walking ? WalkSpeed : (_input.sprint ? SprintSpeed : RunSpeed);
 
             // a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
 
             // note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
             // if there is no input, set the target speed to 0
-            if (_input.move == Vector2.zero) _targetSpeed.Value = 0.0f;
+            if (_input.move == Vector2.zero) targetSpeed = 0.0f;
 
             // a reference to the players current horizontal velocity
             float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
 
             float speedOffset = 0.1f;
-            _inputMagnitude.Value = _input.analogMovement ? _input.move.magnitude : 1f;
+            inputMagnitude = _input.analogMovement ? _input.move.magnitude : 1f;
 
             // accelerate or decelerate to target speed
-            if (currentHorizontalSpeed < _targetSpeed.Value - speedOffset ||
-                currentHorizontalSpeed > _targetSpeed.Value + speedOffset)
+            if (currentHorizontalSpeed < targetSpeed - speedOffset ||
+                currentHorizontalSpeed > targetSpeed + speedOffset)
             {
                 // creates curved result rather than a linear one giving a more organic speed change
                 // note T in Lerp is clamped, so we don't need to clamp our speed
-                _speed = Mathf.Lerp(currentHorizontalSpeed, _targetSpeed.Value * _inputMagnitude.Value,
+                _speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude,
                     Time.deltaTime * SpeedChangeRate);
 
                 // round speed to 3 decimal places
@@ -276,7 +298,7 @@ namespace StarterAssets
             }
             else
             {
-                _speed = _targetSpeed.Value;
+                _speed = targetSpeed;
             }
 
             // normalise input direction
@@ -302,14 +324,14 @@ namespace StarterAssets
         }
 
         private void MoveAnimation() {
-            _animationBlend = Mathf.Lerp(_animationBlend, _targetSpeed.Value, Time.deltaTime * SpeedChangeRate);
+            _animationBlend = Mathf.Lerp(_animationBlend, targetSpeed, Time.deltaTime * SpeedChangeRate);
             if (_animationBlend < 0.01f) _animationBlend = 0f;
 
             // update animator if using character
             if (_hasAnimator)
             {
                 _animator.SetFloat(_animIDSpeed, _animationBlend);
-                _animator.SetFloat(_animIDMotionSpeed, _inputMagnitude.Value);
+                _animator.SetFloat(_animIDMotionSpeed, inputMagnitude);
             }
         }
 
@@ -328,14 +350,14 @@ namespace StarterAssets
                 }
 
                 // stop our velocity dropping infinitely when grounded (requires control)
-                if (IsOwner && _verticalVelocity < 0.0f)
+                if (canControl && _verticalVelocity < 0.0f)
                 {
                     _verticalVelocity = -2f;
                 }
 
                 // Jump
                 // Only evaluate here if player controls this character.
-                if (IsOwner && _input.jump && _jumpTimeoutDelta <= 0.0f)
+                if (canControl && _input.jump && _jumpTimeoutDelta <= 0.0f)
                 {
                     // the square root of H * -2 * G = how much velocity needed to reach desired height
                     _verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
@@ -343,7 +365,9 @@ namespace StarterAssets
                     // update animator if using character
                     if (_hasAnimator)
                     {
+                        _jumpTimeoutDelta = JumpTimeout;
                         _animator.SetBool(_animIDJump, true);
+                        JumpServerRpc();
                     }
                 }
 
@@ -377,7 +401,7 @@ namespace StarterAssets
             }
 
             // apply gravity over time if under terminal (multiply by delta time twice to linearly speed up over time)
-            if (IsOwner && _verticalVelocity < _terminalVelocity)
+            if (canControl && _verticalVelocity < _terminalVelocity)
             {
                 _verticalVelocity += Gravity * Time.deltaTime;
             }
@@ -391,7 +415,7 @@ namespace StarterAssets
 
         [ClientRpc]
         public void JumpClientRpc() {
-            if (IsOwner) return;
+            if (canControl) return;
             _animator.SetBool(_animIDJump, true);
         }
 

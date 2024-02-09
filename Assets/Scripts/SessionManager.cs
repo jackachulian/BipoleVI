@@ -42,11 +42,16 @@ public class SessionManager : MonoBehaviour
 
     [ServerRpc(RequireOwnership = false)]
     public void SpawnCharacterServerRpc(ulong clientID) {
-        Vector2 randomCircle = Random.insideUnitCircle;
+        SpawnCharacter(clientID);
+    }
+
+    public void SpawnCharacter(ulong clientID) {
+        Vector2 randomCircle = Random.insideUnitCircle*10f;
         Vector3 spawnPosition = new Vector3(randomCircle.x, 1f, randomCircle.y);
         Character character = Instantiate(playerCharacterPrefab, spawnPosition, Quaternion.identity);
 
-        character.GetComponent<NetworkObject>().SpawnWithOwnership(clientID);
+        // If online as server,spawn it with ownership on the network
+        if (NetworkManager.Singleton.IsServer) character.GetComponent<NetworkObject>().SpawnWithOwnership(clientID);
 
         // add client to list of connected characters
         _characters.Add(clientID, character);
@@ -56,6 +61,9 @@ public class SessionManager : MonoBehaviour
         
         // spawn on this local server
         character.InitializeServer(clientID, data);
+
+        // stop  here if singleplayer, no client mirroring stuff
+        if (!NetworkManager.Singleton.IsServer) return;
     
         // spawn for all clients
         string serializedData = data.Serialize();
@@ -78,5 +86,9 @@ public class SessionManager : MonoBehaviour
 
     public void StartClient() {
         NetworkManager.Singleton.StartClient();
+    }
+
+    public void StartSingleplayer() {
+        SpawnCharacter(0);
     }
 }
